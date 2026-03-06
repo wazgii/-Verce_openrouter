@@ -1,61 +1,58 @@
-export default async function handler(req, res) {
+// 这一行极其关键：强制开启 Edge 边缘计算模式，完美支持大模型流式输出
+export const config = {
+  runtime: 'edge',
+};
+
+export default async function handler(req) {
   try {
-    // 1. 提取并清理请求路径
-    let targetPath = req.url;
+    const url = new URL(req.url);
+    let targetPath = url.pathname;
+    
+    // 清理路径
     if (targetPath.startsWith('/api/index')) {
       targetPath = targetPath.replace('/api/index', '');
     } else if (targetPath.startsWith('/api')) {
       targetPath = targetPath.replace('/api', '');
     }
     
-    // 如果路径为空，默认给一个基础路径避免报错
     if (!targetPath || targetPath === '/') {
-      targetPath = '/models'; // OpenRouter 的基础测试路径
+      targetPath = '/models';
     }
 
-    // 确保路径以 / 开头
-    if (!targetPath.startsWith('/')) {
-      targetPath = '/' + targetPath;
-    }
-
-    // 2. 拼接 OpenRouter 的官方目标地址
-    // 注意：这里已经包含了 /api/v1，所以 n8n 发来 /chat/completions 时，会完美拼接成完整地址
+    // 拼接 OpenRouter 地址
     const targetUrl = `https://openrouter.ai/api/v1${targetPath}`;
 
-    // 3. 组装请求头
+    // 复制请求头，并清理可能暴露代理身份的头部
+    const newHeaders = new Headers(req.headers);
+    newHeaders.set('Host', 'openrouter.ai');
+    newHeaders.delete('x-forwarded-for');
+    newHeaders.delete('x-real-ip');
+
+    // 组装新请求
     const options = {
       method: req.method,
-      headers: {
-        'Content-Type': req.headers['content-type'] || 'application/json',
-      }
+      headers: newHeaders,
+      redirect: 'manual'
     };
 
-    // 提取并透传 Authorization (Bearer Token) - 这是 OpenRouter 验证 Key 的标准方式
-    if (req.headers['authorization']) {
-      options.headers['authorization'] = req.headers['authorization'];
+    // Edge 环境下，req.body 是一个原生的数据流，直接透传，无需序列化！
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      options.body = req.body;
     }
 
-    // 透传 OpenRouter 推荐的两个可选请求头（如果 n8n 发送了的话）
-    if (req.headers['http-referer']) options.headers['http-referer'] = req.headers['http-referer'];
-    if (req.headers['x-title']) options.headers['x-title'] = req.headers['x-title'];
-
-    // 4. 处理 POST 请求体
-    if (req.method !== 'GET' && req.method !== 'HEAD' && req.body) {
-      options.body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
-    }
-
-    // 5. 向 OpenRouter 发起请求
+    // 发起请求
     const response = await fetch(targetUrl, options);
-    const data = await response.text();
-
-    // 6. 返回结果给 n8n
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.status(response.status).send(data);
+    
+    // 原封不动地将 OpenRouter 的响应（包括流式 Stream）返回给客户端
+    return new Response(response.body, {
+      status: response.status,
+      headers: response.headers
+    });
 
   } catch (error) {
-    res.status(500).json({ 
-      error: "OpenRouter 代理内部错误", 
-      message: error.message
+    return new Response(JSON.stringify({ error: error.message }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
     });
   }
 }
