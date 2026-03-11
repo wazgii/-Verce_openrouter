@@ -5,13 +5,7 @@ export const config = {
 export default async function handler(req) {
   try {
     const url = new URL(req.url);
-    let targetPath = url.pathname;
-    
-    if (targetPath.startsWith('/api/index')) {
-      targetPath = targetPath.replace('/api/index', '');
-    } else if (targetPath.startsWith('/api')) {
-      targetPath = targetPath.replace('/api', '');
-    }
+    let targetPath = url.pathname.replace(/^\/api(\/index)?/, '');
     
     if (!targetPath || targetPath === '/') {
       targetPath = '/models';
@@ -19,15 +13,24 @@ export default async function handler(req) {
 
     const targetUrl = `https://openrouter.ai/api/v1${targetPath}`;
 
-    const newHeaders = new Headers(req.headers);
-    newHeaders.set('Host', 'openrouter.ai');
-    newHeaders.delete('x-forwarded-for');
-    newHeaders.delete('x-real-ip');
+    const headersToForward = [
+      'authorization',
+      'content-type',
+      'x-api-key',
+      'openrouter-referrer',
+      'x-title',
+    ];
+
+    const newHeaders = new Headers();
+    headersToForward.forEach(h => {
+      const val = req.headers.get(h);
+      if (val) newHeaders.set(h, val);
+    });
 
     const options = {
       method: req.method,
       headers: newHeaders,
-      redirect: 'manual'
+      redirect: 'follow'
     };
 
     if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -35,10 +38,17 @@ export default async function handler(req) {
     }
 
     const response = await fetch(targetUrl, options);
-    
+
+    const responseHeaders = new Headers(response.headers);
+
+    responseHeaders.delete('content-encoding');
+    responseHeaders.delete('content-length');
+    responseHeaders.set('Cache-Control', 'no-cache, no-transform');
+    responseHeaders.set('Connection', 'keep-alive');
+
     return new Response(response.body, {
       status: response.status,
-      headers: response.headers
+      headers: responseHeaders
     });
 
   } catch (error) {
